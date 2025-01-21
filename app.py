@@ -8,7 +8,7 @@ from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import TimeoutException, WebDriverException, StaleElementReferenceException,NoSuchWindowException,NoSuchElementException,ElementNotInteractableException
@@ -17,6 +17,10 @@ from time import sleep
 from selenium.webdriver.common.action_chains import ActionChains
 from webdriver_manager.chrome import ChromeDriverManager
 from flask_cors import CORS ,  cross_origin
+
+import logging
+from pywinauto import Application, timings
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -165,7 +169,7 @@ class AutomationSetting:
             for form in forms:
                 try:
                     form_values = {fv['field_id']: {'value': fv['value'], 'value_type': fv.get('value_type')} for fv in form.get('form_value', [])}
-                    element_details = {el['efield_id']: {'evalue': el['evalue'],'evalue_type': el.get('evalue_type'),'eaction': el['eaction']} for el in form['form_element_details']}
+                    element_details = {el['efield_id']: {'evalue': el['evalue'],'evalue_type': el['evalue_type'],'eaction': el['eaction'],'ewait': el['ewait'],'eskip': el['eskip'],**({'ewait_second': el['ewait_second']} if el['ewait'] else {})} for el in form['form_element_details']}
                     
                     form_status, get_element_result = AutomationSetting.fill_form(form_values, element_details, input_data, form_status, get_element_result)
                     sleep(2) 
@@ -212,11 +216,16 @@ class AutomationSetting:
                 evalue = details["evalue"]
                 evalue_type = details["evalue_type"]
                 eaction = details["eaction"]
+                ewait = details["ewait"]
+                eskip = details["eskip"]
+                print("eskip",eskip)
+                ewait_second = details["ewait_second"] if ewait else 0
+                locator = None
+                element = None
                 logger.info(f"Locating element '{form_field_id}' using {evalue_type}: {evalue}")
                 retries = 3  # Number of retries for stale element
                 while retries > 0:
                     try:
-                        element = None
                         # Determine the appropriate locator based on evalue_type
                         if evalue_type == "XPATH":
                             locator = (By.XPATH, evalue)
@@ -228,6 +237,20 @@ class AutomationSetting:
                             locator = (By.CSS_SELECTOR, evalue)
                         elif evalue_type == "NAME":
                             locator = (By.NAME, evalue)
+                        elif evalue_type == "SWITCH_TAB":
+                            if eaction == "switch_to_window":
+                                window_handles = AutomationSetting.driver.window_handles
+                                AutomationSetting.driver.switch_to.window(window_handles[1])
+                                logger.info("Switched to new window.")
+                                if ewait and ewait_second > 0:
+                                    logger.info(f"Waiting for {ewait_second} seconds after switching to the new tab.")
+                                    sleep(ewait_second)
+                                    break
+                                    # continue  # Skip the rest of the loop for this element
+                        elif evalue_type == "NAV_TO":
+                            if eaction == "navigate_to":
+                                AutomationSetting.navigate_to(evalue, form_status)
+                                break
                         else:
                             form_status["updated"] = False
                             form_status["processed_forms_count"] += 1
@@ -245,10 +268,8 @@ class AutomationSetting:
                             ]
                         elements =WebDriverWait(AutomationSetting.driver, 100).until(EC.any_of(*conditions))
 
-                        # If `elements` is a tuple or list, handle it accordingly
-                        if isinstance(elements, tuple) or isinstance(elements, list):
+                        if isinstance(elements, (tuple, list)):
                             for el in elements:
-                                print(el)
                                 if el.is_displayed():
                                     element = el
                                     break
@@ -257,7 +278,9 @@ class AutomationSetting:
 
 
                         if element:
-                            
+                            if ewait and ewait_second > 0:
+                                logger.info(f"Waiting for {ewait_second} seconds before performing action '{eaction}' on '{form_field_id}'")
+                                sleep(ewait_second)
                             if eaction == "send_keys":
                                 element.clear()
                                 if form_field_id in form_values:
@@ -331,28 +354,36 @@ class AutomationSetting:
                             elif eaction == "click":
                                 logger.info(f"Clicking button '{form_field_id}'")
                                 element.click()
-
-                            elif eaction == "wait_click":
-                                sleep(30)
-                                logger.info(f"Waiting for '{form_field_id}' action. Timeout in 30 seconds.")
-                                element.click()
-
-                            elif eaction == "wait_loading":
-                                sleep(30)
-                                logger.info(f"Waiting for loading completion.")
-                            elif eaction == "switch_to_iframe":
-                                AutomationSetting.driver.switch_to.frame(element)
-                                logger.info(f"Switched to iframe '{form_field_id}'")
-
-                            elif eaction == "switch_to_window":
-                                window_handles = AutomationSetting.driver.window_handles
-                                AutomationSetting.driver.switch_to.window(window_handles[1])
-                                logger.info("Switched to new window.")
-
+                            
                             elif eaction == "clear":
                                 element.clear()
                                 logger.info(f"Cleared input for '{form_field_id}'.")
-
+                            #select   
+                            elif eaction == "select_by_visible_text":
+                                select_box = Select(element)
+                                if form_field_id in form_values:
+                                    form_value = form_values[form_field_id]
+                                    value = form_value["value"].strip() 
+                                    value_type = form_value["value_type"]
+                                    select_box.select_by_visible_text(value) # Select by visible text
+                                logger.info(f"Select the value using Visible text for '{form_field_id}'.")
+                            elif eaction == "select_by_index":
+                                select_box = Select(element)
+                                if form_field_id in form_values:
+                                    form_value = form_values[form_field_id]
+                                    value = int(form_value["value"])
+                                    value_type = form_value["value_type"]
+                                    select_box.select_by_index(value) # Select by visible text
+                                logger.info(f"Select the value using Visible text for '{form_field_id}'.")
+                            elif eaction == "select_by_value":
+                                select_box = Select(element)
+                                if form_field_id in form_values:
+                                    form_value = form_values[form_field_id]
+                                    value = form_value["value"]
+                                    value_type = form_value["value_type"]
+                                    select_box.select_by_value(value) # Select by visible text
+                                logger.info(f"Select the value using Visible text for '{form_field_id}'.")
+                                
                             elif eaction == "get_element_text":
                                 extracted_text = element.text
                                 logger.info(f"Extracted element text '{extracted_text}'")
@@ -382,19 +413,29 @@ class AutomationSetting:
                             logger.info(f"Performed action '{eaction}' on element '{form_field_id}' successfully.")
                             break  # Break out of retry loop if successful
                         else:
-                            logger.error(f"Failed to locate element '{form_field_id}' after retries.")
-                            form_status["error"] = f"Timeout occurred while locating element 1'{form_field_id}'"
-                            raise TimeoutException(form_status["error"])
+                            # If element is not found
+                            if eskip==True:
+                                logger.info(f"Element '{form_field_id}' not found, skipping action.")
+                                form_status["processed_forms_count"] += 1
+                               
+                            else:
+                                logger.error(f"Failed to locate element '{form_field_id}' after retries.")
+                                form_status["error"] = f"Timeout occurred while locating element 1'{form_field_id}'"
+                                raise TimeoutException(form_status["error"])
                 
                     except StaleElementReferenceException as sere:
                         logger.warning(f"StaleElementReferenceException encountered. Retrying... ({retries} retries left)")
                         retries -= 1
                         sleep(2)  # Small delay before retrying
             except TimeoutException as te:
-                form_status["error"] = (f"Timeout occurred while locating element  2'{form_field_id}': {te.msg}")
-                logger.error(form_status["error"])
-                # return form_status, get_element_result
-                raise ValueError(form_status["error"])
+                if eskip:
+                    logger.info(f"Element '{form_field_id}' not found and 'eskip' is True. Skipping action.")
+                    form_status["processed_forms_count"] += 1
+                    
+                else:
+                    form_status["error"] = f"Timeout occurred while locating element '{form_field_id}': {te.msg}"
+                    logger.error(form_status["error"])
+                    raise ValueError(form_status["error"])
             except NoSuchWindowException as nwe:
                 form_status["error"] = f"NoSuchWindowException occurred: {nwe.msg}"
                 logger.error(form_status["error"])
@@ -422,8 +463,214 @@ class AutomationSetting:
                 # return form_status, get_element_result
                 raise ValueError(form_status["error"])
         return form_status, get_element_result
-    
 
+
+
+class RPAHandler:
+    def __init__(self, app_path, window_title, backend="uia"):
+        """
+        Initialize the RPAHandler with the application path and backend.
+        param app_path: The path to the application's executable file (e.g., 'notepad.exe').
+        param backend: The automation backend ('win32' or 'uia'). Defaults to 'uia'.
+        """
+        self.app_path = app_path
+        self.window_title = window_title
+        self.backend = backend
+        self.app = None
+
+    def start_application(self):
+        """
+        Launch the application and wait until it's ready.
+        """
+        try:
+            try:
+                self.app = Application(backend=self.backend).connect(title_re=self.window_title)
+            except Exception as e:
+                self.app = Application(backend=self.backend).start(self.app_path)
+
+            # Wait for the application to stabilize
+            timings.wait_until_passes(60, 3, lambda: self.app.is_process_running())
+            self.app.wait_cpu_usage_lower(threshold=10)  # Wait until CPU usage is low
+
+            # Debug available windows
+            windows = self.app.windows()
+
+            return "Application started successfully."
+        except Exception as e:
+            raise Exception(f" START :** Failed to start application: {str(e)}")
+
+    def perform_task(self, actions):
+        """
+        Perform tasks on the application.
+        param actions: List of tasks to execute (e.g., type, click, menu_select).
+        """
+        self.app = Application(backend=self.backend).connect(title_re=self.window_title)
+
+        if not self.app:
+            raise Exception(" EXECUTION : Application is not started. Call start_application first.")
+
+        try:
+            for action in actions:
+                window_title = action.get("window_title")
+
+                # # Debug available windows
+                windows = self.app.windows()
+                # Match window by regex title
+                window = self.app.window(title_re=window_title)
+
+                # Wait for window to be visible and ready before interacting
+                window.wait('visible')  # Wait for the window to be visible
+                window.wait('ready')  # Ensure the window is ready for interaction
+
+                # Check if window exists
+                if not window.exists():
+                    raise Exception(f"Window with title '{window_title}' does not exist.")
+
+                # Perform action based on type
+                action_type = action.get("type")
+                if action_type == "type_keys":
+                    print(' -- type keys 1 - ')
+                    element = getattr(window, action["element"])
+                    element.type_keys(action["value"], with_spaces=True)
+
+                elif action_type == "click":
+                    element = getattr(window, action["element"])
+                    element.click()
+
+                elif action_type == "menu_select":
+                    print(f"Selecting menu item --  3")
+                    menu_name = action.get("menu_name")
+                    menu_option = action.get("menu_option")
+                    menu_control_type = action.get("menu_control_type")
+                    option_control_type = action.get("option_control_type")
+
+                    menu = window.child_window(control_type=menu_control_type, title=menu_name)
+                    if not menu.exists():
+                        raise Exception(f"Menu '{menu_name}' not found.")
+
+                    menu.click_input()
+                    # time.sleep(1)  # Allow menu to expand
+
+                    menu_item = window.child_window(control_type=option_control_type, title=menu_option)
+                    if not menu_item.exists():
+                        raise Exception(f"Menu option '{menu_option}' not found.")
+
+                elif action_type == "select":
+                    print(" select --  4")
+                    element = getattr(window, action["element"])
+                    element.select()
+
+
+                elif action_type == "save_file":
+
+                    print("Handling Save As window...")
+
+                    # Connect to the Save As dialog window
+
+                    save_as_window = self.app.window(title_re=action["window_title"])
+
+                    save_as_window.wait('visible', timeout=10)
+
+                    # Print available UI elements for debugging
+
+                    print("Identifying elements in the 'Save As' window...")
+
+                    save_as_window.print_control_identifiers()
+
+                    # Access the 'Save As' dialog as a child window
+
+                    save_as_dialog = save_as_window.child_window(control_type="Window", title="Save As")
+
+                    save_as_dialog.wait('visible', timeout=10)
+
+                    # Print UI elements inside the dialog to ensure proper identification
+
+                    print("Identifying elements inside the 'Save As' dialog...")
+
+                    save_as_dialog.print_control_identifiers()
+
+                    # Type the file path in the "File name" field
+
+                    file_name_input = save_as_dialog.child_window(control_type="Edit", found_index=0)
+
+                    file_name_input.wait('visible', timeout=5)
+
+                    file_name_input.type_keys(action["file_path"], with_spaces=True)
+
+                    # Click the Save button
+
+                    save_button = save_as_dialog.child_window(control_type="Button", title="Save")
+
+                    save_button.wait('visible', timeout=5)
+
+                    save_button.click_input()
+
+                    print("File saved successfully.")
+
+            return "Tasks performed successfully."
+        except Exception as e:
+            raise Exception(f" EXECUTION :++ 8 Error performing tasks: {str(e)}")
+
+    def get_output(self, output_schema=None):
+        """
+        Automatically fetch the most relevant output from the application window.
+        Optionally, uses a schema to filter the output based on control type, keywords, etc.
+        :param output_schema: Optional schema for more dynamic output extraction.
+        """
+        try:
+            window = self.app.window(title_re=self.window_title)
+
+            # Add a slight delay to ensure the UI is updated
+            time.sleep(1)
+
+            # Retrieve all text elements from the application window
+            text_elements = [
+                elem for elem in window.descendants(control_type="Text")
+                if elem.window_text().strip()  # Ignore empty or whitespace-only elements
+            ]
+            logger.info(f" OUTPUT : Detected text elements: {[elem.window_text() for elem in text_elements]}")
+
+            # If an output schema is provided, prioritize matching elements based on the schema
+            if output_schema:
+                keywords = output_schema.get("keywords", [])
+                fallback = output_schema.get("fallback", "last_text_element")
+
+                # Prioritize elements that match any keyword
+                for elem in text_elements:
+                    for keyword in keywords:
+                        if keyword.lower() in elem.window_text().lower():  # Case-insensitive match
+                            output_text = elem.window_text().strip()
+                            logger.info(f" OUTPUT : Output identified by keyword: {output_text}")
+                            return output_text
+
+                # Fallback if no element matches the keyword
+                if fallback == "last_text_element" and text_elements:
+                    output_text = text_elements[-1].window_text().strip()
+                    logger.info(f" OUTPUT : Fallback output identified: {output_text}")
+                    return output_text
+
+            # If no schema is provided, pick the last meaningful element by default
+            if text_elements:
+                output_text = text_elements[-1].window_text().strip()
+                logger.info(f" OUTPUT : Output identified: {output_text}")
+                return output_text
+
+            # If no relevant text elements are found
+            raise Exception(" OUTPUT : No relevant text elements found in the application window.")
+
+        except Exception as e:
+            logger.error(f" OUTPUT :** Failed to fetch output: {str(e)}")
+            raise Exception(f" OUTPUT :** Failed to fetch output: {str(e)}")
+
+    def close_application(self):
+        """
+        Close the application.
+        """
+        try:
+            self.app.kill()
+            return "Application closed successfully."
+        except Exception as e:
+            raise Exception(f" CLOSE :^^ Failed to close application: {str(e)}")
 
 app = Flask(__name__)
 CORS(app, resources={r"/start-rpa": {"origins": "*"}})  # Allow all origins
@@ -504,6 +751,52 @@ def submit_name():
         form_status_view["error"] = f"An error occurred while processing: {e}"
         logger.error(form_status_view["error"], exc_info=True)
         return jsonify(form_status_view), 500
+
+
+@app.route('/rpa-handler/', methods=['POST'])
+@cross_origin()
+
+def rpa_handler():
+    """
+    API endpoint to handle RPA tasks using RPAHandler.
+    """
+    try:
+        # Extract app_path, window_title, and actions from the request body
+        data = request.json
+        app_path = data.get("app_path")
+        window_title = data.get("window_title")  # Optional
+        actions = data.get("actions")
+
+        # Validate the input
+        if not app_path:
+            return jsonify({"error": "Missing 'app_path' in the request body."}), 400
+        if not isinstance(actions, list) or not actions:
+            return jsonify({"error": "Invalid 'actions'. It must be a non-empty list."}), 400
+
+        # Initialize the RPA handler
+        rpa_handler = RPAHandler(app_path, window_title)
+
+        # Start the application
+        start_result = rpa_handler.start_application()
+
+        # Perform the tasks
+        task_result = rpa_handler.perform_task(actions)
+
+        # Close the application
+        close_result = rpa_handler.close_application()
+
+        # Return success response
+        return jsonify({
+            "message": "RPA tasks completed successfully.",
+            "start_result": start_result,
+            "task_result": task_result,
+            "close_result": close_result
+        }), 200
+
+    except Exception as e:
+        logger.error(f"An error occurred: {str(e)}")
+        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
+
     
 if __name__ == "__main__":
     app.run(debug=True)
